@@ -1,5 +1,6 @@
 # Python
 .venv/
+venv/
 __pycache__/
 *.py[cod]
 
@@ -17,11 +18,17 @@ py-build/
 py-dist/
 build/
 *.spec
+*.exe
+*.msi
+*.dmg
+*.AppImage
 
 # Runtime data
 downloads/
 work/
 config.json
+.env
+.env.*
 
 # Local screenshots / verification artifacts
 ui-*.png
