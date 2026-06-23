@@ -1,0 +1,34 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Node / Electron
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Build outputs
+backend/
+backend.exe
+dist/
+py-build/
+py-dist/
+build/
+*.spec
+
+# Runtime data
+downloads/
+work/
+config.json
+
+# Local screenshots / verification artifacts
+ui-*.png
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

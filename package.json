@@ -1,0 +1,54 @@
+{
+  "name": "c-dl",
+  "version": "1.1.0",
+  "description": "C DL",
+  "license": "MIT",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "app": "electron .",
+    "dist": "electron-builder --win portable --x64",
+    "installer": "electron-builder --win nsis --x64"
+  },
+  "devDependencies": {
+    "electron": "^42.4.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "app.cdl.desktop",
+    "productName": "C DL",
+    "asar": true,
+    "files": [
+      "desktop/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "backend/**/*",
+      "static/**/*"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "static/assets/logo.png"
+    },
+    "portable": {
+      "artifactName": "C DL.exe"
+    },
+    "nsis": {
+      "artifactName": "C DL Setup.exe",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "C DL",
+      "uninstallDisplayName": "C DL",
+      "perMachine": false,
+      "allowElevation": false
+    }
+  }
+}

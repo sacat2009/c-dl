@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>C DL</title>
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <div class="titlebar">
+    <div class="brand">
+      <img src="/static/assets/logo.png" alt="">
+      <span>C DL</span>
+    </div>
+    <div class="title-actions">
+      <button id="minimizeWindow" class="window-button" type="button" aria-label="最小化">-</button>
+      <button id="maximizeWindow" class="window-button" type="button" aria-label="最大化">□</button>
+      <button id="closeWindow" class="window-button close" type="button" aria-label="關閉">×</button>
+    </div>
+  </div>
+
+  <main class="shell">
+    <section class="hero compact">
+      <div class="hero-copy">
+        <img class="hero-logo" src="/static/assets/logo.png" alt="">
+        <h1>C DL</h1>
+      </div>
+
+      <div class="link-stage" aria-hidden="true">
+        <div class="link-card">
+          <span class="link-dot"></span>
+          <span class="link-line"></span>
+          <span class="link-pill">Link</span>
+          <span class="link-ring"></span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <form id="downloadForm" class="form">
+        <label for="url">影片連結</label>
+        <div class="url-row">
+          <input id="url" name="url" type="url" placeholder="https://www.youtube.com/watch?v=..." autocomplete="off" required>
+          <button class="ghost" id="pasteButton" type="button">貼上</button>
+        </div>
+
+        <label for="downloadDir" class="folder-label">下載位置</label>
+        <div class="folder-row">
+          <input id="downloadDir" type="text" readonly>
+          <button class="ghost" id="chooseFolder" type="button">選擇</button>
+        </div>
+
+        <input id="mode" type="hidden" value="video">
+        <input id="quality" type="hidden" value="best">
+
+        <div class="controls">
+          <fieldset class="choice-field">
+            <legend>下載類型</legend>
+            <div class="choice-group" data-choice="mode">
+              <button class="choice-option active" type="button" data-value="video">影片 MP4</button>
+              <button class="choice-option" type="button" data-value="audio">音訊 MP3</button>
+            </div>
+          </fieldset>
+
+          <fieldset class="choice-field wide">
+            <legend id="qualityLegend">畫質</legend>
+            <div class="choice-group" data-choice="quality">
+              <button class="choice-option active" type="button" data-value="best">最佳可用</button>
+              <button class="choice-option" type="button" data-value="1080">最高 1080p</button>
+              <button class="choice-option" type="button" data-value="720">最高 720p</button>
+              <button class="choice-option" type="button" data-value="small">小檔案 480p</button>
+            </div>
+          </fieldset>
+        </div>
+
+        <div class="actions">
+          <button class="primary" type="submit">開始下載</button>
+          <button class="theme-toggle" id="themeToggle" type="button" aria-label="切換暗黑模式">
+            <span class="sun">淺色</span>
+            <span class="moon">深色</span>
+          </button>
+        </div>
+      </form>
+
+      <div id="message" class="message" role="status"></div>
+    </section>
+
+    <section class="result-grid">
+      <article class="result" id="infoCard">
+        <p class="section-title">連結資訊</p>
+        <div class="empty">貼上連結後會自動讀取。</div>
+      </article>
+
+      <article class="result">
+        <p class="section-title">下載進度</p>
+        <div class="progress-wrap">
+          <div class="progress-bar"><span id="progressBar"></span></div>
+          <div class="progress-meta">
+            <strong id="phase">等待開始</strong>
+            <span id="percent">0%</span>
+          </div>
+          <div class="speed" id="speed"></div>
+        </div>
+        <pre id="logs" class="logs" aria-label="下載紀錄"></pre>
+        <div id="jobQueue" class="job-queue"></div>
+      </article>
+    </section>
+
+    <section class="downloads">
+      <div class="downloads-head">
+        <p class="section-title">已下載檔案</p>
+        <button class="ghost small" id="refreshDownloads" type="button">重新整理</button>
+      </div>
+      <div id="downloadList" class="download-list"></div>
+      <div id="downloadStats" class="download-stats">累積下載 0 次</div>
+    </section>
+
+    <footer class="project-footer">
+      <div>
+        <strong>C DL</strong>
+        <span>使用開源專案 yt-dlp 與 FFmpeg。請遵守來源網站條款與內容授權。</span>
+      </div>
+      <div class="footer-links">
+        <a href="https://github.com/yt-dlp/yt-dlp" target="_blank" rel="noreferrer">yt-dlp GitHub</a>
+        <a href="https://github.com/yt-dlp/yt-dlp/blob/master/LICENSE" target="_blank" rel="noreferrer">yt-dlp License</a>
+        <a href="https://ffmpeg.org/" target="_blank" rel="noreferrer">FFmpeg</a>
+      </div>
+    </footer>
+  </main>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
