@@ -4,6 +4,7 @@ import json
 import mimetypes
 import os
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -32,6 +33,10 @@ jobs_lock = threading.Lock()
 settings_lock = threading.Lock()
 completed_downloads: list[dict] = []
 completed_lock = threading.Lock()
+
+
+class AudioValidationError(RuntimeError):
+    pass
 
 
 class JobLogger:
@@ -284,9 +289,17 @@ def progress_hook(job_id: str):
     return hook
 
 
-def build_format(mode: str, quality: str) -> str:
+def build_format(mode: str, quality: str, compatibility_mode: bool = False) -> str:
     if mode == "audio":
         return "bestaudio[ext=m4a]/bestaudio/best"
+    if compatibility_mode:
+        if quality == "1080":
+            return "b[ext=mp4][vcodec^=avc1][acodec!=none][height<=1080]/b[ext=mp4][acodec!=none][height<=1080]/b[acodec!=none][height<=1080]/bv*[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/best[height<=1080]/best"
+        if quality == "720":
+            return "b[ext=mp4][vcodec^=avc1][acodec!=none][height<=720]/b[ext=mp4][acodec!=none][height<=720]/b[acodec!=none][height<=720]/bv*[ext=mp4][vcodec^=avc1][height<=720]+ba[ext=m4a]/bv*[ext=mp4][height<=720]+ba[ext=m4a]/best[height<=720]/best"
+        if quality == "small":
+            return "b[ext=mp4][vcodec^=avc1][acodec!=none][height<=480]/b[ext=mp4][acodec!=none][height<=480]/b[acodec!=none][height<=480]/bv*[ext=mp4][vcodec^=avc1][height<=480]+ba[ext=m4a]/bv*[ext=mp4][height<=480]+ba[ext=m4a]/best[height<=480]/best"
+        return "b[ext=mp4][vcodec^=avc1][acodec!=none]/b[ext=mp4][acodec!=none]/b[acodec!=none]/bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/best"
     if quality == "1080":
         return "bv*[ext=mp4][vcodec^=avc1][height<=1080]+ba[ext=m4a]/bv*[ext=mp4][height<=1080]+ba[ext=m4a]/bv*[height<=1080]+ba/b[ext=mp4][height<=1080][acodec!=none]/b[height<=1080][acodec!=none]/best[height<=1080]/best"
     if quality == "720":
@@ -294,6 +307,70 @@ def build_format(mode: str, quality: str) -> str:
     if quality == "small":
         return "b[ext=mp4][height<=480][acodec!=none]/b[height<=480][acodec!=none]/bv*[ext=mp4][vcodec^=avc1][height<=480]+ba[ext=m4a]/bv*[ext=mp4][height<=480]+ba[ext=m4a]/bv*[height<=480]+ba/best[height<=480]/best"
     return "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4][acodec!=none]/bv*+ba/b[acodec!=none]/best"
+
+
+def file_has_audio(path: str, ffmpeg: str | None) -> bool | None:
+    if not ffmpeg:
+        return None
+    file_path = Path(path)
+    if not file_path.is_file():
+        return None
+    try:
+        result = subprocess.run(
+            [ffmpeg, "-hide_banner", "-i", str(file_path)],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=15,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+    except Exception:
+        return None
+    probe_text = f"{result.stdout}\n{result.stderr}"
+    if "Audio:" in probe_text:
+        return True
+    if "Video:" in probe_text:
+        return False
+    return None
+
+
+def validate_video_audio(paths: list[str], ffmpeg: str | None, job_id: str) -> None:
+    if not paths:
+        raise AudioValidationError("下載完成後找不到輸出檔，無法確認音訊。")
+    if not ffmpeg:
+        raise AudioValidationError("找不到內建 FFmpeg，無法確認或合併音訊。")
+    no_audio: list[str] = []
+    unknown: list[str] = []
+    for path in paths:
+        suffix = Path(path).suffix.lower()
+        if suffix in {".mp3", ".m4a", ".aac", ".wav", ".flac", ".opus"}:
+            continue
+        has_audio = file_has_audio(path, ffmpeg)
+        if has_audio is False:
+            no_audio.append(Path(path).name)
+        elif has_audio is None:
+            unknown.append(Path(path).name)
+    if no_audio:
+        raise AudioValidationError(f"成品缺少音訊軌：{', '.join(no_audio[:3])}")
+    if unknown:
+        append_log(job_id, f"警告：無法確認部分檔案的音訊軌，已保留檔案：{', '.join(unknown[:3])}")
+
+
+def remove_recent_outputs(paths: list[str], started_at: float) -> None:
+    folder = downloads_dir().resolve()
+    for item in paths:
+        path = Path(item)
+        try:
+            resolved = path.resolve()
+            if not resolved.is_file() or folder not in resolved.parents:
+                continue
+            if resolved.stat().st_mtime < started_at - 2:
+                continue
+            resolved.unlink()
+        except Exception:
+            pass
 
 
 def request_headers(url: str) -> dict:
@@ -367,11 +444,21 @@ def locate_downloaded_files(info: dict, started_at: float) -> list[str]:
     return found
 
 
-def make_ydl_opts(job_id: str, url: str, mode: str, quality: str, target_dir: Path, ffmpeg: str | None) -> dict:
+def make_ydl_opts(
+    job_id: str,
+    url: str,
+    mode: str,
+    quality: str,
+    target_dir: Path,
+    ffmpeg: str | None,
+    compatibility_mode: bool = False,
+    overwrite: bool = False,
+) -> dict:
     ydl_opts = {
-        "format": build_format(mode, quality),
+        "format": build_format(mode, quality, compatibility_mode),
         "outtmpl": output_template(url, target_dir),
         "windowsfilenames": True,
+        "overwrites": overwrite,
         "ignoreerrors": False,
         "merge_output_format": "mp4",
         "format_sort": ["res", "ext:mp4:m4a"],
@@ -420,12 +507,42 @@ def run_download(job_id: str, payload: dict) -> None:
         target_dir = downloads_dir()
         ffmpeg = ffmpeg_location()
 
-        info = None
+        def download_once(compatibility_mode: bool = False, overwrite: bool = False) -> tuple[dict, list[str]]:
+            ydl_opts = make_ydl_opts(
+                job_id,
+                url,
+                mode,
+                quality,
+                target_dir,
+                ffmpeg,
+                compatibility_mode=compatibility_mode,
+                overwrite=overwrite,
+            )
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                next_info = ydl.extract_info(url, download=True) or {}
+            next_files = locate_downloaded_files(next_info, started_at)
+            if mode != "audio":
+                try:
+                    validate_video_audio(next_files, ffmpeg, job_id)
+                except AudioValidationError as exc:
+                    exc.paths = next_files
+                    raise
+            return next_info, next_files
+
+        info: dict = {}
+        files: list[str] = []
         for attempt in range(1, 3):
             try:
-                ydl_opts = make_ydl_opts(job_id, url, mode, quality, target_dir, ffmpeg)
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
+                info, files = download_once()
+                break
+            except AudioValidationError as exc:
+                if mode == "audio":
+                    raise
+                append_log(job_id, f"{exc} 正在改用相容格式重新下載一次...")
+                update_job(job_id, status="retrying", phase="成品缺少音訊，正在自動修復", progress=0)
+                remove_recent_outputs(getattr(exc, "paths", []), started_at)
+                info, files = download_once(compatibility_mode=True, overwrite=True)
+                append_log(job_id, "音訊檢查通過。")
                 break
             except Exception:
                 if attempt >= 2:
@@ -434,9 +551,8 @@ def run_download(job_id: str, payload: dict) -> None:
                 update_job(job_id, status="retrying", phase="下載失敗，正在自動重試一次", progress=0)
                 time.sleep(1)
 
-        files = locate_downloaded_files(info or {}, started_at)
-        title = (info or {}).get("title") or ""
-        amount = downloaded_count(info or {}, len(files))
+        title = info.get("title") or ""
+        amount = downloaded_count(info, len(files))
         total_count = increment_download_count(amount)
         remember_completed_downloads(files, title)
         update_job(
