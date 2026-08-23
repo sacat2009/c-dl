@@ -456,11 +456,12 @@ def remove_recent_outputs(paths: list[str], started_at: float) -> None:
 
 def request_headers(url: str) -> dict:
     parsed = urlparse(url)
+    hostname = (parsed.hostname or "").rstrip(".").lower()
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
         "Accept-Language": "zh-TW,zh;q=0.9,en;q=0.8",
     }
-    if parsed.netloc.endswith("bilibili.com") or parsed.netloc.endswith("b23.tv"):
+    if hostname in {"bilibili.com", "b23.tv"} or hostname.endswith((".bilibili.com", ".b23.tv")):
         headers["Origin"] = "https://www.bilibili.com"
         headers["Referer"] = "https://www.bilibili.com/"
     return headers

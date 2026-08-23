@@ -82,6 +82,12 @@ class LocalServerSecurityTests(unittest.TestCase):
         status, _, _ = self.request("GET", "/", headers={"Host": "evil.example"})
         self.assertEqual(status, 421)
 
+    def test_bilibili_headers_require_real_domain_boundary(self) -> None:
+        self.assertIn("Origin", app.request_headers("https://www.bilibili.com/video/BV1"))
+        self.assertIn("Origin", app.request_headers("https://b23.tv/example"))
+        self.assertNotIn("Origin", app.request_headers("https://evilbilibili.com/video"))
+        self.assertNotIn("Origin", app.request_headers("https://b23.tv.evil.example/video"))
+
 
 if __name__ == "__main__":
     unittest.main()
