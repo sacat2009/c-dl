@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import hmac
+import ipaddress
 import mimetypes
 import os
+import secrets
 import socket
 import subprocess
 import sys
@@ -11,6 +14,7 @@ import time
 import traceback
 import webbrowser
 from http import HTTPStatus
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, unquote, urlparse
@@ -27,6 +31,11 @@ DEV_DOWNLOADS.mkdir(exist_ok=True)
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("YTDLP_UI_PORT", "8765"))
+APP_ORIGIN = f"http://{HOST}:{PORT}"
+SESSION_COOKIE = "cdl_session"
+SESSION_TOKEN = secrets.token_urlsafe(32)
+MAX_JSON_BODY = 64 * 1024
+MAX_JOBS = 100
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
@@ -55,7 +64,7 @@ class JobLogger:
 
 
 def now_id() -> str:
-    return f"{int(time.time() * 1000):x}"
+    return secrets.token_urlsafe(12)
 
 
 def safe_json(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200) -> None:
@@ -63,17 +72,58 @@ def safe_json(handler: BaseHTTPRequestHandler, payload: dict, status: int = 200)
     handler.send_response(status)
     handler.send_header("Content-Type", "application/json; charset=utf-8")
     handler.send_header("Cache-Control", "no-store")
+    send_security_headers(handler)
     handler.send_header("Content-Length", str(len(body)))
     handler.end_headers()
     handler.wfile.write(body)
 
 
+def send_security_headers(handler: BaseHTTPRequestHandler) -> None:
+    handler.send_header("X-Content-Type-Options", "nosniff")
+    handler.send_header("X-Frame-Options", "DENY")
+    handler.send_header("Referrer-Policy", "no-referrer")
+    handler.send_header("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+
+
 def read_json(handler: BaseHTTPRequestHandler) -> dict:
-    length = int(handler.headers.get("Content-Length", "0"))
+    if "application/json" not in handler.headers.get("Content-Type", "").lower():
+        raise ValueError("請使用 JSON 格式送出要求。")
+    try:
+        length = int(handler.headers.get("Content-Length", "0"))
+    except ValueError as exc:
+        raise ValueError("要求大小無效。") from exc
     if length <= 0:
         return {}
+    if length > MAX_JSON_BODY:
+        raise ValueError("要求內容過大。")
     raw = handler.rfile.read(length)
+    if len(raw) != length:
+        raise ValueError("要求內容不完整。")
     return json.loads(raw.decode("utf-8"))
+
+
+def valid_host(handler: BaseHTTPRequestHandler) -> bool:
+    return handler.headers.get("Host", "").lower() in {f"{HOST}:{PORT}", f"localhost:{PORT}"}
+
+
+def valid_session(handler: BaseHTTPRequestHandler) -> bool:
+    try:
+        cookies = SimpleCookie(handler.headers.get("Cookie", ""))
+        value = cookies.get(SESSION_COOKIE)
+        return bool(value and hmac.compare_digest(value.value, SESSION_TOKEN))
+    except Exception:
+        return False
+
+
+def valid_post_origin(handler: BaseHTTPRequestHandler) -> bool:
+    return handler.headers.get("Origin", "") in {APP_ORIGIN, f"http://localhost:{PORT}"}
+
+
+def set_session_cookie(handler: BaseHTTPRequestHandler) -> None:
+    handler.send_header(
+        "Set-Cookie",
+        f"{SESSION_COOKIE}={SESSION_TOKEN}; Path=/; Max-Age=86400; HttpOnly; SameSite=Strict",
+    )
 
 
 def default_settings() -> dict:
@@ -234,9 +284,40 @@ def readable_duration(seconds: float | int | None) -> str:
 def validate_url(value: str) -> str:
     value = (value or "").strip()
     parsed = urlparse(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc or not parsed.hostname:
         raise ValueError("請貼上完整的 http 或 https 連結。")
+    if parsed.username or parsed.password:
+        raise ValueError("連結不可包含帳號或密碼。")
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname == "localhost" or hostname.endswith(".localhost"):
+        raise ValueError("不可下載本機或私人網路網址。")
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        address = None
+    if address is not None and not address.is_global:
+        raise ValueError("不可下載本機或私人網路網址。")
     return value
+
+
+def reserve_job(job_id: str) -> None:
+    with jobs_lock:
+        finished = sorted(
+            (job for job in jobs.values() if job.get("status") in {"finished", "error"}),
+            key=lambda job: float(job.get("created_at") or 0),
+        )
+        while len(jobs) >= MAX_JOBS and finished:
+            jobs.pop(finished.pop(0)["id"], None)
+        if len(jobs) >= MAX_JOBS:
+            raise RuntimeError("目前下載工作過多，請等待現有工作完成。")
+        jobs[job_id] = {
+            "id": job_id,
+            "status": "queued",
+            "phase": "排隊中",
+            "progress": 0,
+            "logs": [],
+            "created_at": time.time(),
+        }
 
 
 def resolve_download_path(name: str) -> Path:
@@ -614,14 +695,23 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         return
 
+    def send_error(self, code: int, message: str | None = None, explain: str | None = None) -> None:
+        safe_json(self, {"ok": False, "error": message or HTTPStatus(code).phrase}, code)
+
     def do_GET(self) -> None:
+        if not valid_host(self):
+            self.send_error(HTTPStatus.MISDIRECTED_REQUEST)
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/":
-            self.serve_file(STATIC / "index.html")
+            self.serve_file(STATIC / "index.html", issue_session=True)
             return
         if parsed.path.startswith("/static/"):
             name = parsed.path.removeprefix("/static/")
             self.serve_file(STATIC / name)
+            return
+        if (parsed.path.startswith("/api/") or parsed.path.startswith("/files/")) and not valid_session(self):
+            safe_json(self, {"ok": False, "error": "未授權的本機要求。"}, 403)
             return
         if parsed.path == "/api/job":
             query = parse_qs(parsed.query)
@@ -655,6 +745,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error(HTTPStatus.NOT_FOUND)
 
     def do_POST(self) -> None:
+        if not valid_host(self) or not valid_session(self) or not valid_post_origin(self):
+            safe_json(self, {"ok": False, "error": "未授權的本機要求。"}, 403)
+            return
         try:
             payload = read_json(self)
             if self.path == "/api/info":
@@ -663,15 +756,7 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/download":
                 validate_url(payload.get("url", ""))
                 job_id = now_id()
-                with jobs_lock:
-                    jobs[job_id] = {
-                        "id": job_id,
-                        "status": "queued",
-                        "phase": "排隊中",
-                        "progress": 0,
-                        "logs": [],
-                        "created_at": time.time(),
-                    }
+                reserve_job(job_id)
                 worker = threading.Thread(target=run_download, args=(job_id, payload), daemon=True)
                 worker.start()
                 safe_json(self, {"ok": True, "job_id": job_id})
@@ -688,7 +773,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:
             safe_json(self, {"ok": False, "error": str(exc)}, 400)
 
-    def serve_file(self, path: Path) -> None:
+    def serve_file(self, path: Path, issue_session: bool = False) -> None:
         path = path.resolve()
         if not path.is_file() or STATIC.resolve() not in path.parents and path != (STATIC / "index.html").resolve():
             self.send_error(HTTPStatus.NOT_FOUND)
@@ -698,6 +783,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store" if issue_session else "public, max-age=3600")
+        if issue_session:
+            self.send_header(
+                "Content-Security-Policy",
+                "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data: https:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            )
+            set_session_cookie(self)
+        send_security_headers(self)
         self.end_headers()
         self.wfile.write(data)
 
@@ -708,13 +801,24 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(HTTPStatus.NOT_FOUND)
             return
         content_type = mimetypes.guess_type(str(path))[0] or "application/octet-stream"
-        data = path.read_bytes()
+        size = path.stat().st_size
+        filename = path.name.replace('"', "_").replace("\r", "_").replace("\n", "_")
         self.send_response(200)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Disposition", f'attachment; filename="{path.name}"')
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", f'attachment; filename="{filename}"; filename*=UTF-8\'\'{quote(filename)}')
+        self.send_header("Content-Length", str(size))
+        self.send_header("Cache-Control", "no-store")
+        send_security_headers(self)
         self.end_headers()
-        self.wfile.write(data)
+        with path.open("rb") as source:
+            while chunk := source.read(1024 * 1024):
+                self.wfile.write(chunk)
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.METHOD_NOT_ALLOWED)
+        self.send_header("Allow", "GET, POST")
+        send_security_headers(self)
+        self.end_headers()
 
 
 def port_is_free(host: str, port: int) -> bool:
@@ -731,7 +835,9 @@ def main() -> None:
     print(f"下載資料夾：{downloads_dir()}")
     if os.environ.get("YTDLP_UI_NO_BROWSER") != "1":
         threading.Timer(0.8, lambda: webbrowser.open(url)).start()
-    ThreadingHTTPServer((HOST, PORT), Handler).serve_forever()
+    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server.daemon_threads = True
+    server.serve_forever()
 
 
 if __name__ == "__main__":

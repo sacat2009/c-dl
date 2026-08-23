@@ -9,6 +9,7 @@ const appRoot = isPackaged ? process.resourcesPath : path.resolve(__dirname, "..
 const host = "127.0.0.1";
 const port = Number(process.env.YTDLP_UI_PORT || 8765);
 const url = `http://${host}:${port}`;
+const appOrigin = new URL(url).origin;
 const python = path.join(appRoot, ".venv", "Scripts", "python.exe");
 const backendExe = path.join(appRoot, "backend", "backend.exe");
 const legacyBackendExe = path.join(appRoot, "backend.exe");
@@ -82,18 +83,46 @@ function createWindow() {
       preload: path.join(__dirname, "preload.cjs"),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
     },
   });
 
   mainWindow.once("ready-to-show", () => mainWindow.show());
   mainWindow.webContents.setWindowOpenHandler(({ url: nextUrl }) => {
-    shell.openExternal(nextUrl);
+    if (isSafeExternalUrl(nextUrl)) shell.openExternal(nextUrl);
     return { action: "deny" };
+  });
+  mainWindow.webContents.on("will-navigate", (event, nextUrl) => {
+    if (isAppUrl(nextUrl)) return;
+    event.preventDefault();
+    if (isSafeExternalUrl(nextUrl)) shell.openExternal(nextUrl);
+  });
+  mainWindow.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(webContents === mainWindow.webContents && permission === "clipboard-read" && isAppUrl(webContents.getURL()));
   });
   mainWindow.loadURL(url);
 }
 
+function isAppUrl(value) {
+  try {
+    return new URL(value).origin === appOrigin;
+  } catch {
+    return false;
+  }
+}
+
+function isSafeExternalUrl(value) {
+  try {
+    return ["http:", "https:"].includes(new URL(value).protocol);
+  } catch {
+    return false;
+  }
+}
+
 ipcMain.handle("select-download-folder", async (_event, currentPath) => {
+  if (!isAppUrl(_event.senderFrame?.url || "")) return "";
   const result = await dialog.showOpenDialog(mainWindow, {
     title: "選擇下載位置",
     defaultPath: currentPath || app.getPath("downloads"),
@@ -103,8 +132,8 @@ ipcMain.handle("select-download-folder", async (_event, currentPath) => {
   return result.filePaths[0];
 });
 
-ipcMain.on("window:minimize", () => mainWindow?.minimize());
-ipcMain.on("window:maximize", () => {
+ipcMain.on("window:maximize", (event) => {
+  if (!isAppUrl(event.senderFrame?.url || "")) return;
   if (!mainWindow) return;
   if (mainWindow.isMaximized()) {
     mainWindow.unmaximize();
@@ -112,7 +141,12 @@ ipcMain.on("window:maximize", () => {
     mainWindow.maximize();
   }
 });
-ipcMain.on("window:close", () => mainWindow?.close());
+ipcMain.on("window:minimize", (event) => {
+  if (isAppUrl(event.senderFrame?.url || "")) mainWindow?.minimize();
+});
+ipcMain.on("window:close", (event) => {
+  if (isAppUrl(event.senderFrame?.url || "")) mainWindow?.close();
+});
 
 app.whenReady().then(async () => {
   app.setName("C DL");

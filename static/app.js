@@ -150,8 +150,9 @@ function secondsToText(value) {
 }
 
 function renderInfo(info) {
-  const thumbnail = info.thumbnail
-    ? `<img src="${info.thumbnail}" alt="">`
+  const thumbnailUrl = safeHttpUrl(info.thumbnail);
+  const thumbnail = thumbnailUrl
+    ? `<img src="${escapeHtml(thumbnailUrl)}" alt="">`
     : `<div class="empty">沒有縮圖</div>`;
   const playlistLine = info.playlist_count
     ? `<p>播放清單：${Number(info.playlist_count).toLocaleString("zh-Hant")} 部影片</p>`
@@ -169,6 +170,15 @@ function renderInfo(info) {
       </div>
     </div>
   `;
+}
+
+function safeHttpUrl(value) {
+  try {
+    const url = new URL(String(value || ""));
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : "";
+  } catch {
+    return "";
+  }
 }
 
 function escapeHtml(value) {
